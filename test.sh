@@ -1,0 +1,1 @@
+python main.py configs/fusion-lr-kt.yaml --vis 1

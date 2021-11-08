@@ -81,7 +81,7 @@ class ArgumentParserX(argparse.ArgumentParser):
         self.add_hyper_arg = add_hyper_arg
         self.base_config_path = base_config_path
         if self.add_hyper_arg:
-            self.add_argument('hyper', type=str, help='Path to the yaml parameter')
+            self.add_argument('hyper', type=str, help='Path to the yaml parameter',default="configs/train_scannet.yaml")
         self.add_argument('--exec', type=str, help='Extract code to modify the args')
 
     def parse_args(self, args=None, namespace=None):

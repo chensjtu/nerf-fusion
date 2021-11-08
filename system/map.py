@@ -334,8 +334,9 @@ class DenseIndexedMap:
         self.voxel_optimized[idx] = True
         self.optimize_result_set.clear()     # trigger gc...
 
-    STATUS_CONF_BIT = 1 << 0    # 1
-    STATUS_SURF_BIT = 1 << 1    # 2
+    STATUS_CONF_BIT = 1 << 0    # 1 conf: confidence
+    STATUS_SURF_BIT = 1 << 1    # 2 surf: surface
+    # bit as mask? for instance: eight bool or byte, 1 byte -> 8 options
 
     def integrate_keyframe(self, surface_xyz: torch.Tensor, surface_normal: torch.Tensor, do_optimize: bool = False, async_optimize: bool = False):
         """
@@ -443,7 +444,7 @@ class DenseIndexedMap:
                          f"min = {pcounts.min().item()}, "
                          f"max = {pcounts.max().item()}")
             with torch.no_grad():
-                encoder_latent = self.model.encoder(gathered_surface_xyzn)
+                encoder_latent = self.model.encoder(gathered_surface_xyzn) # N 39
 
             encoder_latent_sum = net_util.groupby_reduce(pinds, encoder_latent, op="sum")   # (C, L)
             encoder_latent_sum += self.latent_vecs[surface_blatent_mapping] * self.voxel_obs_count[surface_blatent_mapping].unsqueeze(-1)

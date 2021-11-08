@@ -1,9 +1,10 @@
-torch
-open3d==0.11.2
+# torch
+open3d
 pyquaternion
 ninja
 opencv-python
-torch_scatter
+# torch_scatter
 tqdm
-tensorboardx
+# tensorboardx
 pyyaml
+tensorboard

@@ -7,7 +7,7 @@ def p(rel_path):
     return str(abs_path)
 
 
-__COMPILE_VERBOSE = False
+__COMPILE_VERBOSE = True
 
 # Load in Marching cubes.
 _marching_cubes_module = load(name='marching_cubes',

@@ -1,5 +1,6 @@
 import numpy as np
 from pyquaternion import Quaternion
+import torch
 
 
 def so3_vee(Phi):
@@ -337,3 +338,15 @@ class Isometry:
         iquat = Quaternion.slerp(source.q, target.q, alpha)
         it = source.t * (1 - alpha) + target.t * alpha
         return Isometry(q=iquat, t=it)
+
+def homo_vec(vect):
+    assert vect.shape[1]==3
+    local = torch.ones_like(vect)[:,:1]
+    return torch.hstack((vect, local)).T
+
+def remove_out_uv(uv, w, h):
+    assert uv.shape[1]==2
+    torch.any(uv < 0)
+    x_lable = (torch.any(uv[:,:1] > 0., dim=-1, keepdim=True) & torch.any(uv[:,:1] < w, dim=-1, keepdim=True))
+    y_lable = (torch.any(uv[:,1:] > 0., dim=-1, keepdim=True) & torch.any(uv[:,1:] < h, dim=-1, keepdim=True))
+    return x_lable&y_lable

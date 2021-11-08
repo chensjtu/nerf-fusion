@@ -1,5 +1,6 @@
 project(Sampler LANGUAGES CXX CUDA)
 cmake_minimum_required(VERSION 3.8)
+include_directories(/opt/CLI11)
 
 find_package(CLI11 CONFIG REQUIRED)
 find_package(Eigen3 3.3 REQUIRED)

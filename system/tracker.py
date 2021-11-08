@@ -1,4 +1,5 @@
 import copy
+from cv2 import AlignExposures
 
 import torch
 import numpy as np
@@ -44,9 +45,9 @@ class SDFTracker:
         d2_w, d2_h = d1_w // 2, d1_h // 2
         d0_intensity = intensity_img.view(1, 1, d0_h, d0_w)
         d0_depth = depth_img.view(1, 1, d0_h, d0_w)
-        d1_intensity = torch.nn.functional.interpolate(d0_intensity, (d1_h, d1_w), mode='bilinear')
+        d1_intensity = torch.nn.functional.interpolate(d0_intensity, (d1_h, d1_w), mode='bilinear',align_corners=True)
         d1_depth = torch.nn.functional.interpolate(d0_depth, (d1_h, d1_w), mode='nearest')
-        d2_intensity = torch.nn.functional.interpolate(d1_intensity, (d2_h, d2_w), mode='bilinear')
+        d2_intensity = torch.nn.functional.interpolate(d1_intensity, (d2_h, d2_w), mode='bilinear',align_corners=True)
         d2_depth = torch.nn.functional.interpolate(d1_depth, (d2_h, d2_w), mode='nearest')
         d0_gradient = gradient_xy(d0_intensity.squeeze(0).squeeze(0))
         d1_gradient = gradient_xy(d1_intensity.squeeze(0).squeeze(0))
@@ -72,7 +73,7 @@ class SDFTracker:
             raise NotImplementedError
 
     def track_camera(self, rgb_data: torch.Tensor, depth_data: torch.Tensor,
-                     calib: FrameIntrinsic, set_pose: Isometry = None):
+                     calib: FrameIntrinsic, set_pose: Isometry = None, for_pc=False):
         """
         :param rgb_data:    (H, W, 3)       float32
         :param depth_data:  (H, W)          float32
@@ -90,7 +91,9 @@ class SDFTracker:
         pc_data = torch.nn.functional.interpolate(cur_depth[0].unsqueeze(0).unsqueeze(0),
                                                   scale_factor=pc_scale, mode='nearest',
                                                   recompute_scale_factor=False).squeeze(0).squeeze(0)
-        cur_rgb = torch.nn.functional.interpolate(cur_rgb.unsqueeze(0), scale_factor=pc_scale, mode='bilinear', recompute_scale_factor=False).squeeze(0)
+        cur_rgb = torch.nn.functional.interpolate(cur_rgb.unsqueeze(0), scale_factor=pc_scale, 
+                                                    mode='bilinear',align_corners=True, 
+                                                    recompute_scale_factor=False).squeeze(0)
         pc_data = unproject_depth(pc_data, calib.fx * pc_scale, calib.fy * pc_scale,
                                   calib.cx * pc_scale, calib.cy * pc_scale)
         pc_data = torch.cat([pc_data, torch.zeros((pc_data.size(0), pc_data.size(1), 1), device=pc_data.device)], dim=-1)
@@ -116,6 +119,8 @@ class SDFTracker:
         pc_data, normal_data = point_box_filter(pc_data, normal_data, 0.02)
         self.last_processed_pc = [pc_data, normal_data]
 
+        if for_pc:
+            return self.last_processed_pc
         if set_pose is not None:
             final_pose = set_pose
         else:

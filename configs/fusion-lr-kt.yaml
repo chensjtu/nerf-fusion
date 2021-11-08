@@ -1,7 +1,7 @@
 # Sequence parameters
 sequence_type: "icl_nuim.ICLNUIMSequence"
 sequence_kwargs:
-  path: "../lr_kt0_noise"
+  path: "/data/yangchen/ICL-NUIM/Di-Fusion_demo"
   start_frame: 0
   end_frame: -1                                       # Run all frames
   first_tq: [-1.4, 1.5, 1.5, 0.0, -1.0, 0.0, 0.0]     # Starting pose

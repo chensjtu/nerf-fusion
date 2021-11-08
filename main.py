@@ -118,7 +118,7 @@ if __name__ == '__main__':
     seq_package, seq_class = args.sequence_type.split(".")
     sequence_module = importlib.import_module("dataset.production." + seq_package)
     sequence_module = getattr(sequence_module, seq_class)
-    vis_param.sequence = sequence_module(**args.sequence_kwargs)
+    vis_param.sequence = sequence_module(load_gt=True, **args.sequence_kwargs)
 
     # Mapping
     if torch.cuda.device_count() > 1:

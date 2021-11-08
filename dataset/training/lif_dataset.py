@@ -113,4 +113,4 @@ class LifCombinedDataset(data.Dataset):
             sample_idx = idx - self.cumulative_sizes[dataset_idx - 1]
         dat = self.datasets[dataset_idx][sample_idx]
         dat = dat[:-1]
-        return *dat, idx
+        return dat, idx

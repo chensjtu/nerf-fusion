@@ -7,7 +7,7 @@ import lr_schedule
 import torch
 import tqdm
 import yaml
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 
 from dataset.training import lif_dataset as ldata
