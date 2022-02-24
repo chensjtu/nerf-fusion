@@ -1,0 +1,38 @@
+basedir = ./logs/
+datadir = demo_dir
+scene = scannet
+dataset_type = test_scannet
+
+no_batching = True
+
+N_iters = 10000
+N_rand = 32768
+N_views = 2
+full_rays = True
+
+i_print = 1
+i_weights = 1000
+
+
+voxel_size = 0.04
+step_size = 0.125
+
+multires = 4
+multires_views = 4
+embed_dim = 64
+
+pruning_every_steps = 2500
+splitting_steps = [5000,25000,75000]
+half_stepsize_steps = [5000,25000,75000]
+
+white_bkgd = False
+half_res = False
+lrate_decay = 500
+
+loss_w_rgb = 32
+loss_w_alpha = 0
+loss_w_reg = 0
+loss_w_depth = 0
+loss_w_region = 1
+loss_w_unregion = 100
+

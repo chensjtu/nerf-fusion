@@ -1,0 +1,30 @@
+basedir = ./logs/
+datadir = demo_dir
+scene = scannet
+dataset_type = scannet
+
+no_batching = True
+
+N_iters = 100000
+N_rand = 65536
+N_views = 4
+full_rays = True
+
+voxel_size = 0.04
+step_size = 0.125
+
+multires = 4
+multires_views = 4
+embed_dim = 64
+
+pruning_every_steps = 2500
+splitting_steps = [5000,25000,75000]
+half_stepsize_steps = [5000,25000,75000]
+
+white_bkgd = False
+half_res = False
+lrate_decay = 500
+
+loss_w_rgb = 128
+loss_w_alpha = 1
+loss_w_reg = 0

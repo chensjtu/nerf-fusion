@@ -36,8 +36,9 @@ cudnn.benchmark = True
 savedir = os.path.join(args.basedir, args.expname)
 
 if args.local_rank >= 0:
-    dist.init_process_group(backend='nccl', init_method="env://")
+    torch.cuda.set_device(args.local_rank)
     device = f'cuda:{args.local_rank}'
+    dist.init_process_group(backend='nccl', init_method="env://")
     n_replica = n_gpus
 
 if args.local_rank <= 0:
@@ -57,7 +58,7 @@ to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 def main():
     # prepare data
     if args.dataset_type == 'blender':
-        dataset = dataset = Blender(args.datadir, args.scene, args.half_res, 
+        dataset = Blender(args.datadir, args.scene, args.half_res, 
                                 args.testskip, args.white_bkgd, with_bbox=True)
     else:
         print(f'{args.dataset_type} has not been supported yet...')
@@ -75,8 +76,7 @@ def main():
             D_feat=args.D_feat, W_feat=args.W_feat, D_sigma=args.D_sigma, W_sigma=args.W_sigma, 
             layernorm=(not args.no_layernorm), with_reg_term=(args.loss_w_reg!=0)),
         vox_rep=vox_grid,
-        bg_color=BackgroundField(bg_color=1. if args.white_bkgd else args.min_color, trainable=False) \
-                if args.bg_field else None,
+        bg_color=BackgroundField(bg_color=1. if args.white_bkgd else 0., trainable=False) if args.bg_field else None,
         white_bkgd=args.white_bkgd,
         min_color=args.min_color,
         early_stop_thres=args.early_stop_thres,
@@ -121,7 +121,7 @@ def main():
     # prepare dataloader
     train_base_raysampler = \
         PerViewRaySampler(dataset.get_sub_set('train'), args.N_rand, args.N_iters, args.N_views, 
-            precrop=False, full_rays=args.full_rays, start_epoch=start, rank=args.local_rank, n_replica=n_replica)
+            precrop=False, full_rays=args.full_rays, start_epoch=start,) # rank=args.local_rank, n_replica=n_replica)
     train_vox_raysampler = VoxIntersectRaySampler(args.N_rand, train_base_raysampler, vox_grid, device=device)
     test_raysampler = VoxIntersectRaySampler(0, RenderingRaySampler(dataset.get_sub_set('test')), 
                             vox_grid, mask_sample=False, device=device, num_workers=1)
@@ -151,7 +151,10 @@ def main():
 
         if i%args.i_print==0:
             psnr = mse2psnr(sub_losses['rgb'])
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()} " + \
+                    # f"Alpha: {sub_losses['alpha'].item()} " + \
+                    f"Hit ratio: {hits.sum().item()/hits.shape[0]} " + \
+                    f"Bg ratio: {(gt_rgb.sum(-1).eq(0)).sum().item()/hits.shape[0]}")
             if args.local_rank <= 0:
                 tb_writer.add_scalar('loss', loss, i)
                 tb_writer.add_scalar('psnr', psnr, i)

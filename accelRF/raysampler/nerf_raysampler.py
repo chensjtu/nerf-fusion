@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import torch.utils.data as data
 from .base import BaseRaySampler, RenderingRaySampler
-from .utils import get_rays
+from .utils import get_rays_openCV, get_rays
 
 class BatchingRaySampler(BaseRaySampler):
     def __init__(
@@ -125,7 +125,7 @@ class PerViewRaySampler(BaseRaySampler):
             rays_d: Tensor, sampled ray directions, [N_rays, 3]
             gt_rgb: Tensor, ground truth color superized learning [N_rays, 3]
         '''
-        output = {'rays_o': [], 'rays_d': [], 'gt_rgb': []}
+        output = {'rays_o': [], 'rays_d': [], 'gt_rgb': [], 'gt_dp': []}
         if self.precrop and index >= self.precrop_iters:
             self.disable_precrop()
             print('disable precrop!')
@@ -134,6 +134,7 @@ class PerViewRaySampler(BaseRaySampler):
             img_dict = self.dataset[img_i]
             pose = img_dict['pose'][:3,:4]
             cam_viewdir = img_dict['pose'][:3,2]
+            target_d = img_dict['depths'][img_i] # 480, 640
             target = img_dict['gt_img'] # if 'gt_img' in img_dict else None
             rays_o, rays_d = get_rays(*self.dataset.get_hwf(), pose) # TODO optimize it
             if not self.full_rays:
@@ -146,10 +147,12 @@ class PerViewRaySampler(BaseRaySampler):
                 output['rays_o'].append(rays_o[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
                 output['rays_d'].append(rays_d[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
                 output['gt_rgb'].append(target[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['gt_dp'].append(target_d[select_coords[:, 0], select_coords[:, 1]]) # (N_rand, 1)
             else:
                 output['rays_o'].append(rays_o.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
                 output['rays_d'].append(rays_d.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
                 output['gt_rgb'].append(target.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['gt_dp'].append(target_d.reshape(-1, 1)[self.rank*self.N_rand:(self.rank+1)*self.N_rand]) 
         output = {k: torch.cat(output[k], 0) for k in output} # (N_views*N_rand, 3)
         # output['coords'] = self.coords # just for debug
         return output
@@ -228,9 +231,214 @@ class NeRFRaySampler(data.Dataset):
 
         return output
 
+class TestFusionViewRaySampler(BaseRaySampler):
+    
+    def __init__(
+        self, 
+        dataset, 
+        N_rand: int=2048,
+        length: int=1000,
+        N_views: int=1,
+        precrop: bool=False,
+        precrop_frac: float=0.5,
+        precrop_iters: int=500,
+        full_rays: bool=False,
+        device: torch.device='cpu',
+        start_epoch: int=0,
+        rank: int=-1,
+        n_replica: int=1,
+        seed: Optional[int]=None
+        ) -> None:
+        
+        super().__init__(
+            dataset, N_rand, length-start_epoch, device, rank, n_replica, seed)
+        self.N_views = N_views
+        self.precrop = precrop
+        self.precrop_frac = precrop_frac
+        self.precrop_iters = precrop_iters - start_epoch
+        self.full_rays = full_rays
+        #
+        H, W, focal = self.dataset.get_hwf()
+        if full_rays:
+            self.N_rand = (H*W - 1) // self.n_replica + 1
+        # the current solution for iters after `precrop_iters`
+        if self.precrop and self.precrop_iters > 0: 
+            dH = int(H//2 * self.precrop_frac)
+            dW = int(W//2 * self.precrop_frac)
+            self.coords = torch.stack(
+                torch.meshgrid(
+                    torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH, device=self.device), 
+                    torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW, device=self.device)
+                ), -1)
+        else:
+            self.coords = torch.stack(torch.meshgrid(
+                torch.linspace(0, H-1, H, device=self.device), 
+                torch.linspace(0, W-1, W, device=self.device)), -1)  # (H, W, 2)
+        self.coords = self.coords.reshape(-1, 2)
 
+    def disable_precrop(self) -> None: 
+        '''
+        user *can* disable precrop after K iters when NeRFSamper is warpped by DataLoader
+        simply call `raysampler.disable_precrop` (instead of `dataloader.dataset.disable_precrop`)
+        it will take effect after the current iteration (of length `self.length` due to prefetching)
+        '''
+        self.precrop = False
+        H, W, _ = self.dataset.get_hwf()
+        self.coords = torch.stack(
+            torch.meshgrid(
+                torch.linspace(0, H-1, H, device=self.device), 
+                torch.linspace(0, W-1, W, device=self.device)
+            ), -1).reshape(-1, 2) # (H, W, 2)
 
-
-
+    def __getitem__(self, index):
+        '''
+        Return:
+            rays_o: Tensor, sampled ray origins, [N_rays, 3]
+            rays_d: Tensor, sampled ray directions, [N_rays, 3]
+            gt_rgb: Tensor, ground truth color superized learning [N_rays, 3]
+        '''
+        output = {'rays_o': [], 'rays_d': [], 'gt_rgb': [], 'gt_dp': []}
+        if self.precrop and index >= self.precrop_iters:
+            self.disable_precrop()
+            print('disable precrop!')
+        for _ in range(self.N_views):
+            img_i = torch.randint(len(self.dataset), (), generator=self.rng, device=self.device)
+            img_dict = self.dataset.data
+            pose = img_dict['poses'][img_i][:3,:4]
+            # cam_viewdir = img_dict['pose'][:3,2]
+            target_d = img_dict['depths'][img_i] # 480, 640
+            target = img_dict['gt_img'][img_i].permute(1,2,0) # NOTE!!! rgb is CHW, transfer to HWC
+            rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose, normalize_dir=True)
+            if not self.full_rays:
+                # To avoid manually setting numpy random seed for ender user when num_workers > 1, 
+                # replace np.random.choice with torch.randperm
+                # np.random.choice(self.coords.shape[0], size=[self.N_rand], replace=False)
+                rand_inds = torch.randperm(self.coords.shape[0], generator=self.rng, device=self.device) # (len_shape, 1)
+                select_inds = rand_inds[self.rank*self.N_rand:(self.rank+1)*self.N_rand]  # (N_rand,)
+                select_coords = self.coords[select_inds].long()  # (N_rand, 2)
+                output['rays_o'].append(rays_o[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['rays_d'].append(rays_d[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['gt_rgb'].append(target[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['gt_dp'].append(target_d[select_coords[:, 0], select_coords[:, 1]]) # (N_rand, 1)
+            else:
+                output['rays_o'].append(rays_o.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['rays_d'].append(rays_d.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['gt_rgb'].append(target.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['gt_dp'].append(target_d.reshape(-1, 1)[self.rank*self.N_rand:(self.rank+1)*self.N_rand]) 
+        output = {k: torch.cat(output[k], 0) for k in output} # (N_views*N_rand, 3)
+        # output['coords'] = self.coords # just for debug
+        return output
             
+class FusionRaySampler(BaseRaySampler):
+    def __init__(
+        self, 
+        dataset, 
+        N_rand: int=2048,
+        length: int=1000,
+        N_views: int=1,
+        precrop: bool=False,
+        precrop_frac: float=0.5,
+        precrop_iters: int=500,
+        full_rays: bool=False,
+        device: torch.device='cpu',
+        start_epoch: int=0,
+        rank: int=-1,
+        n_replica: int=1,
+        seed: Optional[int]=None
+        ) -> None:
+        
+        super().__init__(
+            dataset, N_rand, length-start_epoch, device, rank, n_replica, seed)
+        self.N_views = N_views
+        self.precrop = precrop
+        self.precrop_frac = precrop_frac
+        self.precrop_iters = precrop_iters - start_epoch
+        self.full_rays = full_rays
+        #
+        H, W, focal = self.dataset.get_hwf()
+        if full_rays:
+            self.N_rand = (H*W - 1) // self.n_replica + 1
+        # the current solution for iters after `precrop_iters`
+        if self.precrop and self.precrop_iters > 0: 
+            dH = int(H//2 * self.precrop_frac)
+            dW = int(W//2 * self.precrop_frac)
+            self.coords = torch.stack(
+                torch.meshgrid(
+                    torch.linspace(H//2 - dH, H//2 + dH - 1, 2*dH, device=self.device), 
+                    torch.linspace(W//2 - dW, W//2 + dW - 1, 2*dW, device=self.device)
+                ), -1)
+        else:
+            self.coords = torch.stack(torch.meshgrid(
+                torch.linspace(0, H-1, H, device=self.device), 
+                torch.linspace(0, W-1, W, device=self.device)), -1)  # (H, W, 2)
+        self.coords = self.coords.reshape(-1, 2) # N,2
 
+
+    def disable_precrop(self) -> None: 
+        '''
+        user *can* disable precrop after K iters when NeRFSamper is warpped by DataLoader
+        simply call `raysampler.disable_precrop` (instead of `dataloader.dataset.disable_precrop`)
+        it will take effect after the current iteration (of length `self.length` due to prefetching)
+        '''
+        self.precrop = False
+        H, W, _ = self.dataset.get_hwf()
+        self.coords = torch.stack(
+            torch.meshgrid(
+                torch.linspace(0, H-1, H, device=self.device), 
+                torch.linspace(0, W-1, W, device=self.device)
+            ), -1).reshape(-1, 2) # (H, W, 2)
+            
+    @staticmethod
+    def homo(self,intrinsic):
+        tmp = torch.eye(4, device=intrinsic.device)
+        tmp[:3,:3] = intrinsic
+        return tmp
+
+    def __getitem__(self, index):
+        '''
+        Return:
+            rays_o: Tensor, sampled ray origins, [N_rays, 3]
+            rays_d: Tensor, sampled ray directions, [N_rays, 3]
+            gt_rgb: Tensor, ground truth color superized learning [N_rays, 3]
+        '''
+        output = {'rays_o': [], 'rays_d': [], 'gt_rgb': [], 'gt_dp': []}
+        KRcam = []
+        if self.precrop and index >= self.precrop_iters:
+            self.disable_precrop()
+            print('disable precrop!')
+        # img_i = torch.randint(len(self.dataset), (), generator=self.rng, device=self.device)
+        img_dict = self.dataset.data
+        for i in range(self.N_views):
+            pose = img_dict['poses'][i][:3,:4]
+            target = img_dict['imgs'][i].permute(1,2,0) # if 'gt_img' in img_dict else None # transpose to HWC
+            target_d = img_dict['depths'][i] # 480, 640
+            rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose,normalize_dir=True)
+            # get KRcam TODO: move to dataloader.
+            KRcam.append(self.homo(img_dict['intrinsics'][i])@img_dict['poses'][i].inverse())
+            if not self.full_rays:
+                # To avoid manually setting numpy random seed for ender user when num_workers > 1, 
+                # replace np.random.choice with torch.randperm
+                # np.random.choice(self.coords.shape[0], size=[self.N_rand], replace=False)
+                rand_inds = torch.randperm(self.coords.shape[0], generator=self.rng, device=self.device) # (len_shape, 1)
+                select_inds = rand_inds[self.rank*self.N_rand:(self.rank+1)*self.N_rand]  # (N_rand,)
+                select_coords = self.coords[select_inds].long()  # (N_rand, 2)
+                output['rays_o'].append(rays_o[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['rays_d'].append(rays_d[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['gt_rgb'].append(target[select_coords[:, 0], select_coords[:, 1]])  # (N_rand, 3)
+                output['gt_dp'].append(target_d[select_coords[:, 0], select_coords[:, 1]]) # (N_rand, 1)
+            else:
+                output['rays_o'].append(rays_o.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['rays_d'].append(rays_d.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['gt_rgb'].append(target.reshape(-1, 3)[self.rank*self.N_rand:(self.rank+1)*self.N_rand])  # (N_rand, 3)
+                output['gt_dp'].append(target_d.reshape(-1, 1)[self.rank*self.N_rand:(self.rank+1)*self.N_rand]) 
+
+        output = {k: torch.cat(output[k], 0) for k in output} # (N_views*N_rand, 3)
+        # output['coords'] = self.coords # just for debug
+
+        #### add fuse data
+        output.update({
+            # 'pix_mask':img_dict['pix_mask'], # pixmask for cal pix wise feat
+            'imgs':img_dict['imgs'], # mksure img is CHW
+            'KRcam':torch.stack(KRcam)
+        })
+        return output 

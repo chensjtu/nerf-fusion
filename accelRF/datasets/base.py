@@ -14,7 +14,10 @@ class BaseDataset(data.Dataset):
 
     def get_hwf(self) -> Tuple:
         f = self.downsample_factor
-        return self.H//f, self.W//f, self.focal/f
+        if isinstance(self.focal, Tuple):
+            return self.H//f, self.W//f, (self.focal[0]/f, self.focal[1]/f)
+        else:
+            return self.H//f, self.W//f, self.focal/f
 
     def get_K(self) -> Tensor:
         '''

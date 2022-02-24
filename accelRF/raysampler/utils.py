@@ -22,8 +22,31 @@ def get_rays(H: int, W: int, focal: float, c2w: torch.Tensor, normalize_dir: boo
         rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
     return rays_o, rays_d
 
-def get_rays_openCV():
-    pass
+@torch.jit.script
+def get_rays_openCV(H: int, W: int, K: torch.Tensor, c2w: torch.Tensor, normalize_dir: bool=False):
+    
+    device = c2w.device
+    i, j = torch.meshgrid(
+        torch.linspace(0, W-1, W, device=device), 
+        torch.linspace(0, H-1, H, device=device))  # pytorch's meshgrid has indexing='ij'
+    i = i.t()
+    j = j.t()
+    dirs = torch.stack([(i-K[0][2])/K[0][0], (j-K[1][2])/K[1][1], torch.ones_like(i, device=device)], -1) # note this func is for openGL coor
+    # Rotate ray directions from camera frame to the world frame
+    rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    rays_o = c2w[:3,-1].expand(rays_d.shape)
+    if normalize_dir:
+        rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+
+    # naive method for ray_dir NOTE here the index should be wh!!!
+    # uv = torch.stack((j.flatten(),i.flatten())).t()
+    # uv1 = torch.cat((uv,torch.ones_like(uv)),dim=-1)[:,:3]
+    # dirs_compare = (c2w[:3,:3]@(K.inverse())@uv1.t()).t()
+    # if normalize_dir:
+    #     dirs_compare = dirs_compare/torch.norm(dirs_compare,dim=-1,keepdim=True)
+
+    return rays_o, rays_d
 
 def get_rays_np(H, W, K, c2w):
     i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')

@@ -1,4 +1,5 @@
 from typing import Callable, Dict, List, Optional, Tuple
+from cv2 import exp
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,7 +32,7 @@ def fill_in(shape, hits: Tensor, input: Tensor, initial=0.):
             output = output.masked_scatter(hits.unsqueeze(-1).expand(*shape), input)
     return output
 
-class NSVFRender(nn.Module):
+class NerfusionRendererTest(nn.Module):
     def __init__(
         self,
         pts_embedder: Optional[nn.Module],
@@ -126,16 +127,20 @@ class NSVFRender(nn.Module):
                 
                 r_out = volumetric_rendering(nn_out['rgb'], nn_out['free_energy'], t_vals[...,:_max_samples], 
                             white_bkgd=self.white_bkgd, with_dist=True)   
-                ret = {'rgb': r_out['rgb'], 'disp': r_out['disp'], 'acc': r_out['acc'], "depth":r_out['depth']}
+                ret = {'rgb': r_out['rgb'], "depth":r_out['depth'], }
                 if 'feat_n2' in nn_out:
                     ret['regz_term'] = (nn_out['feat_n2'] * r_out['weights']).sum(-1)
             else:
                 ret = {'rgb': None, 'disp': None, 'acc': None, "depth": None}
             # fill_in un-hitted holes
             ret['rgb'] = fill_in((n_rays, 3), ray_hits, ret['rgb'], 1.0 if self.white_bkgd else 0.0)
-            ret['disp'] = fill_in((n_rays,), ray_hits, ret['disp'], 0.0)
-            ret['acc'] = fill_in((n_rays, ), ray_hits, ret['acc'], 0.0)
             ret['depth'] = fill_in((n_rays, ), ray_hits, ret['depth'], 0.0)
+            if not self.training:
+                ret['disp'] = fill_in((n_rays,), ray_hits, r_out['disp'], 0.0)
+                ret['acc'] = fill_in((n_rays, ), ray_hits, r_out['acc'], 0.0)
+            else:
+                ret['weights']=fill_in((n_rays, _max_samples), ray_hits, r_out['weights'], 0.0)
+            ret['t_vals']=fill_in((n_rays, _max_samples), ray_hits, t_vals[...,:_max_samples], 0.0)
             if self.bg_color is not None:
                 bg_rgb = self.bg_color(ret['rgb'])
                 missed = (1 - ret['acc'])

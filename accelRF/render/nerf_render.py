@@ -5,7 +5,6 @@ from torch import Tensor
 
 from accelRF.raysampler.utils import ndc_rays
 
-
 # volumetric rendering should be differentialable.
 @torch.jit.script
 def volumetric_rendering(
@@ -73,7 +72,7 @@ def volumetric_rendering(
         disp = torch.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps)
         if white_bkgd:
             comp_rgb = comp_rgb + (1. - acc[..., None])
-    return {'rgb':comp_rgb, 'disp':disp, 'acc':acc, 'weights':weights}
+    return {'rgb':comp_rgb, 'disp':disp, 'acc':acc, 'depth':depth,"weights":weights}
 
 
 class NeRFRender(nn.Module):

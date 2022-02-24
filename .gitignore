@@ -6,3 +6,6 @@ build
 *.so
 *.egg-info
 *.egg
+
+demo_dir
+data

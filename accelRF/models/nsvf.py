@@ -91,6 +91,25 @@ class NSVF_MLP(nn.Module):
             nn.Sigmoid() if with_activation else nn.Identity()
         )
     
+    def detach_model(self,detach_list=None):
+        '''
+            detach specific layers of the MLP module
+        '''
+        if detach_list is None:
+            detach_list = ['feat_layers', 'rgb_layers','sigma_layers']
+        if 'feat_layers' in detach_list:
+            for name, module in self.feat_layers._modules.items():
+                for p in module.parameters():
+                    p.requires_grad = False
+        if 'rgb_layers' in detach_list:
+            for name, module in self.rgb_layers._modules.items():
+                for p in module.parameters():
+                    p.requires_grad = False
+        if 'sigma_layers' in detach_list:
+            for name, module in self.sigma_layers._modules.items():
+                for p in module.parameters():
+                    p.requires_grad = False
+
     def forward(self, pts: Tensor, dir: Optional[Tensor]=None):
         feat = self.feat_layers(pts)
         sigma = self.sigma_layers(feat)
