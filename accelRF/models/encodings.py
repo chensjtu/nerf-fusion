@@ -79,6 +79,9 @@ class VoxelEncoding(nn.Module):
         corner_idx = vox_rep.center2corner[p2v_idx] # (N, 8)
         embeds = self.embeddings(corner_idx) # (N, 8, embed_dim)
         
+        # get local coord 
+        local_coord = (pts-center_pts)/vox_rep.voxel_size
+
         # interpolation
         if not per_voxel:
             interp_embeds = trilinear_interp(pts, center_pts, embeds, 
@@ -88,6 +91,9 @@ class VoxelEncoding(nn.Module):
             r = (pts*self.interp_offset + (1-pts)*(1-self.interp_offset))\
                     .prod(dim=-1, keepdim=True)[None,:] # [1, N_ppv, 8, 1]
             interp_embeds = (embeds[:,None,:] * r).sum(-2) # [N_v, N_ppv, embed_dim]
+
+        interp_embeds = torch.cat((interp_embeds,local_coord),dim=-1)
+
         return interp_embeds
 
     def update_embeddings(self, new_embeddings):

@@ -107,7 +107,7 @@ class NerfusionRenderer(nn.Module):
                         break # or continue
                     if (i+self.fwd_steps >= max_samples) or (n_pts_fwd + n_pts_step > self.chunk):
                         l, r = start_step, i+self.fwd_steps
-                        out, n_pts = self.step_forward(
+                        out, _ = self.step_forward(
                             pts[:,l:r], p2v_idx[:,l:r], rays_d, mask_pts[:,l:r], dists[:,l:r])
                         nn_out.append(out)
                         start_step, n_pts_fwd = r, 0
@@ -164,7 +164,7 @@ class NerfusionRenderer(nn.Module):
         out = {'rgb': masked_scatter(mask_pts, nn_out['rgb'])}
         if dists is not None:
             dists = dists[mask_pts]
-            free_energy = F.relu(nn_out['sigma']) * dists[...,None] # activation is here!
+            free_energy = F.softplus(nn_out['sigma']) * dists[...,None] # activation is here!
             out['free_energy'] = masked_scatter(mask_pts, free_energy)
         else:
             out['sigma'] = masked_scatter(mask_pts, nn_out['sigma'])
@@ -189,7 +189,7 @@ class NerfusionRenderer(nn.Module):
             vox_embeds = self.voxel_embedder(rel_pts, p2v_idx[i:i+vox_chunk], 
                                 self.vox_rep, per_voxel=True) # [vc, bits**3, emb_dim]
             sigma = self.model(self.pts_embedder(vox_embeds))['sigma'][...,0] # [vc, bits**3]
-            scores.append(torch.exp(-sigma.relu()).min(-1)[0]) # [vc]
+            scores.append(torch.exp(-sigma.softplus()).min(-1)[0]) # [vc]
         scores = torch.cat(scores, 0) 
         keep = (1 - scores) > thres
         # scores = torch.rand(n_vox, device=device) # only for test

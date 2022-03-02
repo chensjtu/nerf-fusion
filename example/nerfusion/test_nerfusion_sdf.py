@@ -12,21 +12,21 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 from accelRF.datasets import Room_SCANNET, neural_rgbd_dataset
-from accelRF.metrics.nerfusion_loss import nerfusion_Loss
-from accelRF.models import (NSVF_MLP, BackgroundField, PositionalEncoding,
+from accelRF.metrics.nerfusion_loss import *
+from accelRF.models import (SDFNet, RGBNet, LaplaceDensity, BackgroundField, PositionalEncoding,
                             VoxelEncoding)
 from accelRF.pointsampler import NSVFPointSampler
 from accelRF.raysampler import (TestFusionViewRaySampler, VisRaySampler,
                                 VoxIntersectRaySampler)
-from accelRF.render.nerfusion_test import NerfusionRendererTest
+from accelRF.render.nerfusion_test import NerfusionRendererTestSDF
 from accelRF.rep.voxel_grid import TSDF_Fusion
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm, trange
 
-from opts import config_parser
+from opts import config_parser_sdf
 
-parser = config_parser()
+parser = config_parser_sdf()
 args = parser.parse_args()
 
 n_gpus = torch.cuda.device_count()
@@ -45,18 +45,21 @@ if args.local_rank <= 0:
     tb_writer = SummaryWriter(os.path.join(savedir, 'summaries'))
 
 # parameters
-if args.pruning_every_steps>0:
-    args.pruning_steps = list(range(0, args.N_iters, args.pruning_every_steps))[1:]
+# if args.pruning_every_steps>0:
+#     args.pruning_steps = list(range(0, args.N_iters, args.pruning_every_steps))[1:]
     
-args.loss_weights = {
+loss_weights = {
     'rgb': args.loss_w_rgb, 
     'alpha': args.loss_w_alpha, 
     'reg_term': args.loss_w_reg,
     'depth': args.loss_w_depth,
     'region':args.loss_w_region,
-    'un_region': args.loss_w_unregion
+    'un_region': args.loss_w_unregion,
+    'sdf': args.loss_w_sdf,
+    'empty': args.loss_w_empty,
+    'eikonal': args.loss_w_eikonal
     }
-print(f"the weights of loss are:{args.loss_weights}")
+print(f"the weights of loss are:{loss_weights}")
 
 img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = torch.no_grad()(lambda x : -10. * torch.log10(x))
@@ -105,25 +108,27 @@ def main():
     # for i in range(len(poses)):
     #     np.savetxt(f"./data/pose{i}.txt",poses[i])
 
-    # np.save("demo_dir/metric_depth.npy", metric_depth.cpu().numpy())
-
     # create model
-    # input_ch, input_ch_views = (2*args.multires+1)*(args.embed_dim), (2*args.multires_views)*3
-    input_ch, input_ch_views = (2*args.multires+1)*(args.embed_dim+3), (2*args.multires_views)*3 # view not include x
-    nsvf_render = NerfusionRendererTest(
+    sdf_d_in = (2*args.multires+1)*(3+args.embed_dim) # 3*2*6+3
+    rgb_d_in = 9+2*args.multires_views*3 if args.rgb_mode == 'idr' else (2*args.multires_views+1)*3 #33
+
+    nsvf_render = NerfusionRendererTestSDF(
         point_sampler=NSVFPointSampler(args.step_size*args.voxel_size),
-        pts_embedder=PositionalEncoding(args.multires, pi_bands=True),
-        view_embedder=PositionalEncoding(args.multires_views, angular_enc=True, include_input=False),
+        pts_embedder=PositionalEncoding(args.multires, pi_bands=False),
+        view_embedder=PositionalEncoding(args.multires_views, angular_enc=False, include_input=torch.true_divide),
         voxel_embedder=VoxelEncoding(vox_grid.n_corners, args.embed_dim),
-        model=NSVF_MLP(in_ch_pts=input_ch, in_ch_dir=input_ch_views, D_rgb=args.D_rgb, W_rgb=args.W_rgb, 
-            D_feat=args.D_feat, W_feat=args.W_feat, D_sigma=args.D_sigma, W_sigma=args.W_sigma, 
-            layernorm=(not args.no_layernorm), with_reg_term=(args.loss_w_reg!=0),skips_feat=[]), # NOTE: skip is not used! 
+        sdf_net=SDFNet(args.feature_vector_size, 0.0, sdf_d_in, 1, [args.W_sdf]*args.D_sdf, 
+                    args.sdf_geo_init, args.sdf_bias, args.sdf_skip_in, args.sdf_weight_norm),
+        rgb_net=RGBNet(args.feature_vector_size, args.rgb_mode, rgb_d_in, 3, 
+                    [args.W_rgb]*args.D_rgb, args.rgb_weight_norm),
+        density_fn=LaplaceDensity(args.beta, args.beta_min),
         vox_rep=vox_grid,
         bg_color=BackgroundField(bg_color=1. if args.white_bkgd else 0., trainable=False) if args.bg_field else None,
         white_bkgd=args.white_bkgd,
         min_color=args.min_color,
         early_stop_thres=args.early_stop_thres,
         chunk=args.chunk * n_gpus if args.local_rank < 0 else args.chunk,
+        with_eikonal=args.loss_w_eikonal>0
     ).to(device)
         
     # create optimizer
@@ -131,7 +136,7 @@ def main():
     start = 0
 
     # init loss_fn
-    loss_fn = nerfusion_Loss(args.loss_weights, args.region_epsilon, args.epsilon_steps, args.i_decay_epsilon)
+    loss_fn = nerfusion_Loss(loss_weights, args, args.region_epsilon, args.epsilon_steps, args.i_decay_epsilon)
 
     # load checkpoint
     if args.ft_path is not None and args.ft_path!='None':
@@ -177,17 +182,17 @@ def main():
 
     # prepare dataloader
     train_base_raysampler = \
-        TestFusionViewRaySampler(dataset.get_render_set(), args.N_rand, args.N_iters, args.N_views, 
-            precrop=False, full_rays=args.full_rays, start_epoch=start,) # rank=args.local_rank, n_replica=n_replica) # !!! get render set
+        TestFusionViewRaySampler(dataset.get_render_set(), args.N_rand, args.N_iters, args.N_views,  ### get render set for debug NOTE
+            precrop=False, full_rays=args.full_rays, start_epoch=start,) # rank=args.local_rank, n_replica=n_replica)
     train_vox_raysampler = VoxIntersectRaySampler(args.N_rand, train_base_raysampler, vox_grid, device=device)
-    
-    test_raysampler = VoxIntersectRaySampler(0, VisRaySampler(dataset.get_test_set()), 
-                            vox_grid, mask_sample=False, device=device, num_workers=1)
-    val_raysampler = VoxIntersectRaySampler(0, VisRaySampler(dataset.get_render_set()), 
-                            vox_grid, mask_sample=False, device=device, num_workers=1)
-    
     train_rayloader = DataLoader(train_vox_raysampler, num_workers=0) # vox_rays  ampler's N_workers==0, pin_mem==False
     train_ray_iter = iter(train_rayloader)
+
+    ### test and val dataloader
+    # test_raysampler = VoxIntersectRaySampler(0, VisRaySampler(dataset.get_test_set()), 
+    #                         vox_grid, mask_sample=False, device=device, num_workers=1)
+    # val_raysampler = VoxIntersectRaySampler(0, VisRaySampler(dataset.get_train_set()), 
+    #                         vox_grid, mask_sample=False, device=device, num_workers=0)
 
     # start training
     train_iter = start # ref train_iter to aviod not defined.
@@ -220,18 +225,17 @@ def main():
             if "rgb" in sub_losses.keys():
                 psnr = mse2psnr(sub_losses['rgb'])
             else:
-                psnr = None
+                psnr = torch.tensor(0.0)
             tqdm.write(f"[TRAIN] train_iter: {train_iter} Loss: {loss.item()} PSNR: {psnr.item()} " + \
                     f"Hit ratio: {hits.sum().item()/hits.shape[0]} " + \
                     f"Bg ratio: {(gt_rgb.sum(-1).eq(0)).sum().item()/hits.shape[0]} " + \
                     f"cur_epsilon: {loss_fn.get_cur_epsilon()}")
             if args.local_rank <= 0:
                 tb_writer.add_scalar('total_loss', loss, train_iter)
-                if psnr is not None:
-                    tb_writer.add_scalar('psnr', psnr, train_iter)
+                tb_writer.add_scalar('psnr', psnr, train_iter)
                 for k, i in sub_losses.items():
                     tb_writer.add_scalar(f'losses/{k}', i, train_iter)
-
+                    
         # if i%args.i_testset == 0 and i > 0 and args.local_rank <= 0:
         #     eval(nsvf_render_, test_rayloader, dataset.get_hwf()[:2], os.path.join(savedir, f'testset_{i:06d}'))
         
@@ -246,8 +250,8 @@ def main():
             }, path)
 
         ### used for vis the pred depth and gt_dpeth
-        if train_iter%1000==0 and args.local_rank <= 0:
-            vis(nsvf_render_, test_raysampler,tb_writer,train_iter,dataset,-1)
+        # if train_iter%1000==0 and args.local_rank <= 0:
+        #     vis(nsvf_render_, test_raysampler,tb_writer,train_iter,dataset,-1)
 
     ### extract mesh.
     if args.export_mesh:
@@ -256,35 +260,10 @@ def main():
             location=os.path.join(savedir, f'pt_{args.pt_per_edge}_{train_iter+1:06d}.ply'))
 
     ### vis some part after train
-    for turn, test_view in enumerate(range(5, len(test_raysampler), 50)):
-        vis(nsvf_render_, test_raysampler,tb_writer,train_iter+turn,dataset,test_view)
+    # for turn, test_view in enumerate(range(0, len(test_raysampler), 50)):
+    #     vis(nsvf_render_, test_raysampler,tb_writer,train_iter+turn,dataset,test_view)
 
-    ### eval depth
-    mean_err = []
-    for turn, test_view in enumerate(range(0, len(val_raysampler), 1)):
-        mean_err.append(eval_depth(nsvf_render_, val_raysampler, turn, test_view))
-    print("the mean depth err is: ", torch.stack(mean_err).mean())
 
-    # ### vis
-    # for img_i in trange(len(test_raysampler)):
-    #     ray_batch = val_raysampler[img_i]
-    #     rays_o, rays_d = ray_batch['rays_o'], ray_batch['rays_d']
-    #     vox_idx, t_near, t_far = ray_batch['vox_idx'], ray_batch['t_near'], ray_batch['t_far']
-    #     hits, gt_rgb = ray_batch['hits'], ray_batch['gt_rgb']
-    #     with torch.no_grad():
-    #         nsvf_render_.eval()
-    #         render_out = nsvf_render_(rays_o, rays_d, vox_idx, t_near, t_far, hits)
-    #         nsvf_render_.train()
-    #     if "rgb" in render_out.keys():
-    #         psnr = mse2psnr(img2mse(render_out['rgb'], gt_rgb))
-    #         tb_writer.add_scalar('psnr_eval', psnr, img_i)
-    #         H, W, _ = dataset.get_hwf()
-    #         tb_writer.add_image('color/gt_rgb', gt_rgb.reshape(H,W,-1), img_i, dataformats="HWC")
-    #         tb_writer.add_image('color/rgb', to8b(render_out['rgb'].cpu().numpy()).reshape(H,W,-1), img_i, dataformats='HWC')
-    #     tb_writer.add_image('geo/acc', render_out['acc'].reshape(H,W), img_i, dataformats="HW")
-    #     tb_writer.add_image('geo/depth', to01dp(render_out['depth']).reshape(H,W), img_i, dataformats="HW")
-    #     tb_writer.add_image('geo/disp', to01dp(render_out['disp']).reshape(H,W), img_i, dataformats="HW")
-    #     tb_writer.add_image('geo/gt_depth', to01dp(ray_batch['gt_dp']).reshape(H,W), img_i, dataformats="HW")
 
 def vis(renderer, rayloader,summary_writer, train_iter, dataset, specific_index=0):
     renderer.eval()
@@ -311,9 +290,9 @@ def vis(renderer, rayloader,summary_writer, train_iter, dataset, specific_index=
     vis_map = cv2.cvtColor(cv2.applyColorMap(compared_map.numpy().astype(np.uint8),
         cv2.COLORMAP_JET),cv2.COLOR_BGR2RGB) # be careful of cv2 special channel rules.
     summary_writer.add_image('geo/error_map',vis_map,train_iter,dataformats="HWC")
-    summary_writer.add_scalars('test_depth', {"depth_var_mean":(pred_dp-gt_dp).abs()[gt_dp_mask].mean(),
+    summary_writer.add_scalars('test_depth', {"depth_var_mean":(pred_dp-gt_dp).abs().mean(),
                                             "depth_var_max":(pred_dp-gt_dp).abs().max(),
-                                            "depth_var_min":(pred_dp-gt_dp).abs()[gt_dp_mask].min()}, train_iter)
+                                            "depth_var_min":(pred_dp-gt_dp).abs().min()}, train_iter)
     renderer.train()
 
 
@@ -371,20 +350,7 @@ def vis_depth(renderer, rayloader,summary_writer, train_iter, dataset, specific_
         summary_writer.add_image('eval_depth',vis_map,train_iter,dataformats="HWC")
     renderer.train()
 
-def eval_depth(renderer, rayloader,turn,specific_index=0):
-    renderer.eval()
-    ray_batch = rayloader.get_rays_for_test(specific_index)
-    rays_o, rays_d = ray_batch['rays_o'], ray_batch['rays_d']
-    vox_idx, t_near, t_far = ray_batch['vox_idx'], ray_batch['t_near'], ray_batch['t_far']
-    hits, gt_rgb, gt_dp = ray_batch['hits'], ray_batch['gt_rgb'], ray_batch['gt_dp'].squeeze()
-    with torch.no_grad():
-        render_out = renderer(rays_o, rays_d, vox_idx, t_near, t_far, hits)
-    # pred_dp = (render_out['depth'].reshape(480,640)*1000).cpu().numpy().astype(np.uint16)
-    # imageio.imwrite(f'demo_dir/depths/depth{turn}.png',pred_dp)
-    gt_dp_mask = gt_dp.ne(0.0)
-    pred_dp = render_out['depth'].masked_fill(~gt_dp_mask,0.0)
-    renderer.train()
-    return (pred_dp-gt_dp).abs()[gt_dp_mask].mean()
+
 
 if __name__ == '__main__':
     # print("Args: \n", args, "\n", "-"*40)

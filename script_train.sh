@@ -85,19 +85,19 @@
 #                                             --loss_w_depth 0.0
 
 # ### another exp, no linear steps. with region_epsilon 1, 1->1
-python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_scannet.txt \
-                                            --expname only_region_loss_02_new \
-                                            --N_iters 20000 \
-                                            --i_print 100 \
-                                            --N_views 2 \
-                                            --N_rand 10000 \
-                                            --i_weights 5000 \
-                                            --i_decay_epsilon 100 \
-                                            --epsilon_steps 100 \
-                                            --loss_w_rgb 0.0 \
-                                            --loss_w_depth 0.0 \
-                                            --region_epsilon 0.2 \
-                                            --loss_w_region 100 
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_scannet.txt \
+#                                             --expname only_region_loss_02_new \
+#                                             --N_iters 20000 \
+#                                             --i_print 100 \
+#                                             --N_views 2 \
+#                                             --N_rand 10000 \
+#                                             --i_weights 5000 \
+#                                             --i_decay_epsilon 100 \
+#                                             --epsilon_steps 100 \
+#                                             --loss_w_rgb 0.0 \
+#                                             --loss_w_depth 0.0 \
+#                                             --region_epsilon 0.2 \
+#                                             --loss_w_region 100 
 
 # ### another exp, no linear steps. with region_epsilon 0.2, 0.2->0.2
 # python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_scannet.txt \
@@ -139,3 +139,92 @@ python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/te
 #                                             --loss_w_depth 1.0 \
 #                                             --loss_w_region 0.0 \
 #                                             --loss_w_unregion 0.0
+
+
+### use blender dataset, rgb & depth loss
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname blender_base_line \
+#                                             --loss_w_depth 1.0 \
+#                                             --loss_w_rgb 1.0 \
+#                                             --loss_w_region 0.0 \
+#                                             --loss_w_unregion 0.0 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 12000 \
+#                                             --N_views 2
+
+### use local coord as input
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname test_blender_1 \
+#                                             --loss_w_depth 1.0 \
+#                                             --loss_w_rgb 1.0 \
+#                                             --loss_w_region 0.0 \
+#                                             --loss_w_unregion 0.0 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 10000 \
+#                                             --N_views 2
+
+### use new region loss
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname blender_1_region_linear \
+#                                             --loss_w_depth 1.0 \
+#                                             --loss_w_rgb 1.0 \
+#                                             --loss_w_region 100.0 \
+#                                             --loss_w_unregion 1000.0 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 12000 \
+#                                             --N_views 2
+
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname blender_1_region_nolinear1 \
+#                                             --loss_w_depth 1.0 \
+#                                             --loss_w_rgb 1.0 \
+#                                             --loss_w_region 100.0 \
+#                                             --loss_w_unregion 1000.0 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 12000 \
+#                                             --N_views 2 \
+#                                             --epsilon_steps 0 \
+#                                             --region_epsilon 1
+
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname blender_1_region_nolinear02 \
+#                                             --loss_w_depth 1.0 \
+#                                             --loss_w_rgb 1.0 \
+#                                             --loss_w_region 100.0 \
+#                                             --loss_w_unregion 1000.0 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 12000 \
+#                                             --N_views 2 \
+#                                             --epsilon_steps 0 \
+#                                             --region_epsilon 0.2
+
+python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+                                            --expname all_frames_train \
+                                            --loss_w_depth 1.0 \
+                                            --loss_w_rgb 1.0 \
+                                            --loss_w_region 0.0 \
+                                            --loss_w_unregion 0.0 \
+                                            --loss_w_alpha 0 \
+                                            --voxel_size 0.02 \
+                                            --N_iters 50000 \
+                                            --N_rand 2048 \
+                                            --N_views 1 \
+                                            --export_mesh \
+                                            --pt_per_edge 3
+
+# python example/nerfusion/test_nerfusion.py --config example/nerfusion/configs/test_blender.txt \
+#                                             --expname blender_region_linear_alpha \
+#                                             --loss_w_depth 0.0 \
+#                                             --loss_w_rgb 0.0 \
+#                                             --loss_w_region 100.0 \
+#                                             --loss_w_unregion 1000.0 \
+#                                             --loss_w_alpha 1 \
+#                                             --voxel_size 0.02 \
+#                                             --N_iters 20000 \
+#                                             --N_rand 8192 \
+#                                             --N_views 1

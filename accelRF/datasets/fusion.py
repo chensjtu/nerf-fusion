@@ -497,7 +497,7 @@ def integrate(
     w = torch.arange(im_w, dtype=torch.long)
     h = torch.arange(im_h, dtype=torch.long)
     x, y= torch.meshgrid(h, w)
-    xy = torch.stack([x,y]).permute(1,2,0) # hw2
+    xy = torch.stack([y,x]).permute(1,2,0) # hw2
     uvd = torch.cat((xy,depth_im[:,:,None]),dim=-1)
     pixel_xyz_world = inv_project_points_cam_coords(cam_intr,uvd,cam_pose) #Nx3
 

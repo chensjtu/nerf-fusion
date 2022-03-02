@@ -70,6 +70,7 @@ class VisRaySampler(BaseRaySampler):
         super().__init__(dataset, N_rand, length=None, device=device, rank=rank, n_replica=n_replica, seed=seed)
         H,W,_ = dataset.get_hwf()
         self.N_rand=H*W
+        self.is_GL = dataset.is_GL
     
     def __getitem__(self, index):
         '''
@@ -85,7 +86,10 @@ class VisRaySampler(BaseRaySampler):
         # cam_viewdir = img_dict['pose'][:3,2]
         target_d = img_dict['depths'][index] # 480, 640
         target = img_dict['gt_img'][index].permute(1,2,0) # NOTE!!! rgb is CHW, transfer to HWC
-        rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose, normalize_dir=True)
+        if self.is_GL:
+            rays_o, rays_d = get_rays(*self.dataset.get_hwf(), pose, normalize_dir=True)
+        else:
+            rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose, normalize_dir=True)
         output['rays_o']=rays_o.reshape(-1, 3)  # (N_rand, 3)
         output['rays_d']=rays_d.reshape(-1, 3)  # (N_rand, 3)
         output['gt_rgb']=target.reshape(-1, 3)  # (N_rand, 3)

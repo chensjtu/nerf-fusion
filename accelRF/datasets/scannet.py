@@ -3,7 +3,7 @@ import copy
 import statistics
 import sys, os
 import pickle
-
+import re
 import cv2
 import imageio
 from matplotlib.pyplot import axis
@@ -13,9 +13,10 @@ from PIL import Image,ImageOps
 
 from .fusion import TSDFVolumeTorch
 from .base import BaseDataset
+# from accelRF.datasets import BaseDataset
 # from accelRF.datasets import fusion
 
-__all__ = ['Single_SCANNET','SCANNET']
+__all__ = ['Single_SCANNET','SCANNET',"neural_rgbd_dataset"]
 
 def save_point_cloud(filename, xyz, rgb=None):
     from plyfile import PlyData,PlyElement
@@ -253,6 +254,35 @@ def pad_scannet(img, intrinsics):
     return img, intrinsics
 
 
+def alphanum_key(s):
+    """ Turn a string into a list of string and number chunks.
+        "z23a" -> ["z", 23, "a"]
+    """
+    return [int(x) if x.isdigit() else x for x in re.split('([0-9]+)', s)]
+
+def load_poses(posefile):
+    file = open(posefile, "r")
+    lines = file.readlines()
+    file.close()
+    poses = []
+    valid = []
+    lines_per_matrix = 4
+    for i in range(0, len(lines), lines_per_matrix):
+        if 'nan' in lines[i]:
+            valid.append(False)
+            poses.append(np.eye(4, 4, dtype=np.float32).tolist())
+        else:
+            valid.append(True)
+            pose_floats = [[float(x) for x in line.split()] for line in lines[i:i+lines_per_matrix]]
+            poses.append(pose_floats)
+
+    return poses, valid
+
+
+def load_focal_length(filepath):
+    file = open(filepath, "r")
+    return float(file.readline())
+
 class ResizeImage(object):
     """ Resize everything to given size.
 
@@ -348,6 +378,7 @@ class Single_SCANNET(BaseDataset):
         H: int=480,W: int=640, mode: str='train', voxel_size: float=.04, max_depth: float=5.0, voxel_dim: int=160
     ) -> None:
         super().__init__()
+        self.is_GL=False # use different pose define
         self.spherify = spherify # not used.
         self.use_ndc = use_ndc
         self.H = H
@@ -570,6 +601,7 @@ class Room_SCANNET(BaseDataset):
         voxel_size: float=.04, max_depth: float=5.0
     )->None:
         super().__init__()
+        self.is_GL=False
         self.scene = scene
         self.datapath = os.path.join(root, scene)
         self.tsdf_file = 'all_tsdf_{}'.format(n_views)
@@ -689,8 +721,206 @@ class Room_SCANNET(BaseDataset):
     def get_HWK(self):
         return self.H, self.W, self.K
 
+class neural_rgbd_dataset(BaseDataset):
+    """
+        use for test period
+    """
+
+    def __init__(
+        self, root: str, scene: str, 
+        half_res: bool = False, testskip: int = 1, white_bkgd: bool = False,
+        with_bbox: bool = False, n_views: int = 9,H: int=480,W: int=640, mode: str='train', 
+        voxel_size: float=.04, max_depth: float=5.0
+    )->None:
+        super().__init__()
+        self.scene = scene
+        basedir = os.path.join(root, scene)
+
+        ### note this is GL coor, so please use correct pose and get_ray
+        self.is_GL = True
+        transpose_matrix = np.eye(4)
+        transpose_matrix[1,1]=-1
+        transpose_matrix[2,2]=-1
+
+        # special params
+        sc_factor = 0.4
+        translation = [0.0, -1.42, 0.0]
+        crop = 0
+        downsample_factor = 1
+
+        img_files = [f for f in sorted(os.listdir(os.path.join(basedir, 'images')), key=alphanum_key) if f.endswith('png')]
+        depth_files = [f for f in sorted(os.listdir(os.path.join(basedir, 'depth_filtered')), key=alphanum_key) if f.endswith('png')]
+        all_poses, valid_poses = load_poses(os.path.join(basedir, 'poses.txt'))
+        
+        # Train, val and test split
+        num_frames = len(img_files)
+        train_frame_ids = list(range(0, num_frames, 100)) # NOTE, only 116 frames are used
+
+        # Lists for the data to load into
+        images = []
+        depth_maps = []
+        poses = []
+        frame_indices = []
+
+        # Read images and depth maps for which valid poses exist
+        for i in train_frame_ids:
+            if valid_poses[i]:
+                img = imageio.imread(os.path.join(basedir, 'images', img_files[i]))
+                depth = imageio.imread(os.path.join(basedir, 'depth_filtered', depth_files[i]))
+
+                images.append(img)
+                depth_maps.append(depth)
+                poses.append(all_poses[i])
+                frame_indices.append(i)
+
+        # Map images to [0, 1] range
+        images = (np.array(images) / 255.).astype(np.float32)
+
+        # Convert depth to meters, then to "network units"
+        depth_shift = 1000.0
+        depth_maps = (np.array(depth_maps) / depth_shift).astype(np.float32)
+        depth_maps *= sc_factor # 0.4
+        depth_maps = depth_maps[..., np.newaxis]
+
+        poses = np.array(poses).astype(np.float32)
+        poses[:, :3, 3] += translation # shift pose
+        poses[:, :3, 3] *= sc_factor # zoom in
+
+        # Intrinsics
+        self.H, self.W = depth_maps[0].shape[:2]
+        focal = load_focal_length(os.path.join(basedir, 'focal.txt'))
+
+        # Resize color frames to match depth
+        images = resize_images(images, H, W)
+
+        # Crop the undistortion artifacts
+        if crop > 0:
+            images = images[:, crop:-crop, crop:-crop, :]
+            depth_maps = depth_maps[:, crop:-crop, crop:-crop, :]
+            H, W = depth_maps[0].shape[:2]
+
+        if downsample_factor > 1:
+            H = H//downsample_factor
+            W = W//downsample_factor
+            focal = focal/downsample_factor
+            images = resize_images(images, H, W)
+            depth_maps = resize_images(depth_maps, H, W, interpolation=cv2.INTER_NEAREST)
+
+        self.focal = focal
+        self.K = np.array([[focal,0.,W/2],
+                        [0.,focal, H/2],
+                        [0.,0.,1.]]).astype(np.float32)
+
+        imgs = np.stack(images).transpose([0,3,1,2])        
+        depths = np.stack(depth_maps)[...,0]
+        intrinsics = self.K[None,:].repeat(poses.shape[0],axis=0)
+
+        print("loaded! images shape {}, pose shape {}, intrinsic shape {}".format(
+            imgs.shape, poses.shape, intrinsics.shape
+        ))
+        # cal the bds 
+        bds = self.cal_bounds(depths, poses, intrinsics[0])
+
+        self.train_list = list(range(0, num_frames, 10))
+        self.test_list = list(set(frame_indices).difference(set(self.train_list)))
+
+        self.data = {
+            'gt_img':torch.from_numpy(imgs), # NCHW
+            'depths':torch.from_numpy(depths),
+            'intrinsics':torch.from_numpy(intrinsics),
+            'poses':torch.from_numpy(poses), # [N, 4, 4]
+            'bds': bds,
+            'T1': torch.from_numpy(transpose_matrix).float()
+        }
+
+    def build_list(self, datapath, tsdf_file, mode):
+        with open(os.path.join(datapath, tsdf_file, 'fragments_{}.pkl'.format(mode)), 'rb') as f:
+            metas = pickle.load(f)
+        return metas
+
+    def load_specific_meta(self,datapath, tsdf_file, scene_id):
+        with open(os.path.join(datapath, tsdf_file, scene_id, 'fragments.pkl'), 'rb') as f:
+            metas = pickle.load(f)
+        return metas
+
+    def read_cam_file(self, filepath, vid):
+        intrinsics = np.loadtxt(os.path.join(filepath, 'intrinsic', 'intrinsic_color.txt'), delimiter=' ')[:3, :3]
+        intrinsics = intrinsics.astype(np.float32)
+        c2w = np.loadtxt(os.path.join(filepath, 'pose', '{}.txt'.format(str(vid))))
+        return intrinsics, c2w
+
+    def read_img(self, filepath,H,W,intrinsics):
+        img = Image.open(filepath)
+        if img.width != W: # need resize image
+            im, intrinsics = pad_scannet(img, intrinsics)
+            w,h = im.size
+            im = im.resize((W,H), Image.BILINEAR)
+            intrinsics[0, :] /= (w / W)
+            intrinsics[1, :] /= (h / H)
+        else: #image is right, K is not right
+            intrinsics[0, :] /= (1296 / W)
+            intrinsics[1, :] /= (968 / H)
+        return np.array(im, dtype=np.float32)/255., intrinsics
+
+    def read_depth(self, filepath, maxdepth=5.0):
+        # Read depth image and camera pose
+        depth_im = cv2.imread(filepath, -1).astype(
+            np.float32)
+        depth_im /= 1000.  # depth is saved in 16-bit PNG in millimeters
+        depth_im[depth_im > maxdepth] = 0
+        return depth_im
+
+    def get_render_set(self, n_frame: int=40, phi: float=30.0, radius: float=4.0):
+        # render_poses = torch.stack([pose_spherical(angle, -phi, radius)
+        #                         for angle in np.linspace(-180,180,n_frame+1)[:-1]], 0)
+        render_set = copy.copy(self)
+        # render_set.imgs = None
+        # render_set.poses = render_poses
+        return render_set
+
+    def get_train_set(self):
+        render_set = copy.deepcopy(self)
+        render_set.data['depths'] = render_set.data['depths'][self.train_list]
+        render_set.data['gt_img'] = render_set.data['gt_img'][self.train_list]
+        render_set.data['intrinsics'] = render_set.data['intrinsics'][self.train_list]
+        render_set.data['poses'] = render_set.data['poses'][self.train_list]
+        return render_set
+
+    def get_test_set(self):
+        render_set = copy.deepcopy(self)
+        render_set.data['depths'] = render_set.data['depths'][self.test_list]
+        render_set.data['gt_img'] = render_set.data['gt_img'][self.test_list]
+        render_set.data['intrinsics'] = render_set.data['intrinsics'][self.test_list]
+        render_set.data['poses'] = render_set.data['poses'][self.test_list]
+
+        return render_set
+
+    @staticmethod
+    def cal_bounds(depths, poses, intrinsic):
+        # use get_view_frustum to get bounds
+        vol_bnds = np.zeros((3, 2))
+        for id in range(depths.shape[0]):
+            depth_im = depths[id]
+            cam_pose = poses[id]
+
+            # Compute camera view frustum and extend convex hull
+            view_frust_pts = get_view_frustum_np(depth_im, intrinsic, cam_pose)
+            vol_bnds[:, 0] = np.minimum(vol_bnds[:, 0], np.amin(view_frust_pts, axis=1))
+            vol_bnds[:, 1] = np.maximum(vol_bnds[:, 1], np.amax(view_frust_pts, axis=1))
+        return vol_bnds
+
+    def get_bds(self):
+        return self.data['bds']
+    
+    def __len__(self):
+        return self.data['poses'].shape[0]
+
+    def get_HWK(self):
+        return self.H, self.W, self.K
+
+
 if __name__=="__main__":
-    a = Room_SCANNET('demo_dir','scannet')
+    a = Room_SCANNET('data','breakfast_room')
 
 
     # def get_render_set(self, n_frame: int=120, path_zflat: bool=False):

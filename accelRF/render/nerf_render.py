@@ -1,3 +1,4 @@
+from pickle import TRUE
 from typing import Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
@@ -57,7 +58,7 @@ def volumetric_rendering(
     accum_prod = torch.cat([
         torch.ones_like(alpha[..., :1]),
         torch.cumprod(1.0 - alpha[..., :-1] + eps, -1)
-    ], -1)
+    ], -1) # nerf's T
     weights = alpha * accum_prod
     if rgb is None:
         return {'weights': weights}
@@ -73,6 +74,86 @@ def volumetric_rendering(
         if white_bkgd:
             comp_rgb = comp_rgb + (1. - acc[..., None])
     return {'rgb':comp_rgb, 'disp':disp, 'acc':acc, 'depth':depth,"weights":weights}
+
+# volumetric rendering should be differentialable.
+# @torch.jit.script
+def volumetric_rendering_sdf(
+    rgb: Optional[Tensor], sigma: Tensor, 
+    z_vals: Tensor, dir_lens: Optional[Tensor]=None, 
+    white_bkgd: bool=False, with_dist: bool=False,
+    rgb_only: bool=False, with_T: bool=False, with_t: bool=True,
+    only_depth: bool=True, reg_weight: bool=True) -> Dict[str, Tensor]:
+    """Volumetric Rendering Function.
+
+    Args:
+        rgb: Tensor, color, [N_rays, N_samples, 3]
+        sigma: Tensor, density, [N_rays, N_samples, 1].
+        z_vals: Tensor, [N_rays, N_samples]. Used for calculating dist
+            if is None, input sigma should already multiplied with dist.
+        dir_lens: [N_rays, 1]
+        white_bkgd: bool.
+            if True, sigma is actually sigma * dist. 
+        dirs: Tensor, [N_rays, 3]. Note: *no expand* Update: **removed**
+
+    Returns:
+        dict(
+            comp_rgb: Tensor, [N_rays, 3].
+            disp: Tensor, [N_rays].
+            acc: Tensor, [N_rays].
+            weights: Tensor, [N_rays, N_samples]
+        )
+    """
+    eps = 1e-10
+    ret = {}
+    if not with_dist:
+        dists = torch.cat([
+            z_vals[..., 1:] - z_vals[..., :-1],
+            1e10 * torch.ones_like(z_vals[..., :1])
+        ], -1) # [N_rays, N_samples]
+        # Multiply each distance by the norm of its corresponding direction ray
+        # to convert to real world distance (accounts for non-unit directions).
+        if dir_lens is not None:
+            dists = dists * dir_lens
+        # Note that we're quietly turning sigma from [..., 0] to [...].
+        free_energy = sigma[..., 0] * dists
+    else:
+        free_energy = sigma[..., 0]
+        
+    # random noise is omitted.
+    # noise = torch.randn_like(sigma) * noise_std
+    
+    alpha = 1.0 - torch.exp(-free_energy)
+    transmittance = torch.cat([
+        torch.ones_like(alpha[..., :1]), # add 0 for transperancy 1 at t_0
+        torch.cumprod(1.0 - alpha + eps, -1)
+    ], -1)
+    weights = alpha * transmittance[..., :-1]
+
+    if with_T: 
+        ret['transmittance'] = transmittance
+    if rgb is not None:
+        comp_rgb = (weights[..., None] * rgb).sum(-2)
+        acc = weights.sum(-1)
+        if reg_weight:
+            weights = weights/acc.unsqueeze(-1)
+        if white_bkgd:
+            comp_rgb = comp_rgb + (1. - acc[..., None])
+        ret['rgb'] = comp_rgb
+        if not rgb_only:
+            depth = (weights * z_vals).sum(-1)
+            # Equivalent to (but slightly more efficient and stable than):
+            #  disp = 1 / max(eps, where(acc > eps, depth / acc, 0))
+            if not only_depth:
+                inv_eps = torch.tensor(1 / eps, dtype=depth.dtype, device=depth.device)
+                disp = acc / depth
+                disp = torch.where((disp > 0) & (disp < inv_eps) & (acc > eps), disp, inv_eps)
+                ret['disp'], ret['acc'], ret['depth'], ret["weights"] = disp, acc, depth, weights
+            else:
+                ret['disp'], ret['acc'], ret['depth'], ret["weights"] = None, acc, depth, weights
+    else:
+        ret["weights"]=weights/weights.sum(-1)
+    ret['z_vals']=z_vals
+    return ret
 
 
 class NeRFRender(nn.Module):

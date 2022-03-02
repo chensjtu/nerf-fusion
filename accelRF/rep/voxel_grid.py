@@ -640,6 +640,7 @@ class TSDF_Fusion(Explicit3D):
                 order='C').astype(int)
             self._vol_bnds[:, 1] = self._vol_bnds[:, 0] + self._vol_dim * self._voxel_size
             self._vol_origin = torch.from_numpy(self._vol_bnds[:, 0].copy(order='C').astype(np.float32)).to(device)
+
         # Get voxel grid coordinates
         xv, yv, zv = torch.meshgrid(
             torch.arange(0, self._vol_dim[0]),
@@ -795,7 +796,47 @@ class TSDF_Fusion(Explicit3D):
     def get_pts(self,pt_per_edge):
         sparse_pts = generate_pts_vox(self.center_points, self._voxel_size, pt_per_edge=pt_per_edge)
         voxel_index = torch.arange(0,self.n_voxels).to(sparse_pts.device)
-        return sparse_pts, voxel_index,self.occ_vol
+        return sparse_pts, voxel_index, self.occ_vol
+
+    def get_corner(self,pt_per_edge):
+        '''
+            get full pts from voxel-grid
+        '''
+        assert isinstance(pt_per_edge, int)
+
+        sh = self._vol_dim*pt_per_edge # shape
+        corner = self._vol_origin.cpu() + torch.tensor([-0.5,-0.5,-0.5])*self._voxel_size # vol corner
+
+        if pt_per_edge <= 1:
+            world_c = self._world_c[:,:3] 
+            pt_mask = self.occ_vol.flatten()
+            voxel_index = torch.arange(0,self.n_voxels).to(world_c.device)
+            # pt_mask.masked_fill_(pt_mask, voxel_index)
+            pt_idx = torch.ones_like(self.occ_vol.flatten())*-1
+            pt_idx[pt_mask] = voxel_index
+            
+        else:
+            xv, yv, zv = torch.meshgrid(
+                torch.arange(0, self._vol_dim[0]*pt_per_edge), # start from -0.5,-0.5,-0.5
+                torch.arange(0, self._vol_dim[1]*pt_per_edge),
+                torch.arange(0, self._vol_dim[2]*pt_per_edge),
+            )
+            vox_coords = torch.stack([xv.flatten(), yv.flatten(), zv.flatten()], dim=1).long()
+            world_c = corner + (self._voxel_size * vox_coords)/pt_per_edge
+
+            pt_mask = torch.ones_like(self.occ_vol.flatten(),device='cpu')*-1
+            pt_mask[self.occ_vol.flatten()>0]=torch.arange(0,self.n_voxels)
+            ids = self._linearize_id((vox_coords/pt_per_edge).long())
+            pt_idx = pt_mask[ids]
+
+
+        ### verify the range of lc
+        # pt_mask = pt_idx.ne(-1)
+        # index = torch.randint(0,90000,[10000])
+        # lc = (world_c[pt_mask][index] - self.center_points[pt_idx[pt_mask][index]].cpu())/self._voxel_size
+        # print(lc.max())
+        # print(lc.min())
+        return world_c, pt_idx, sh, corner
 
     def get_mesh(self):
         """Compute a mesh from the voxel volume using marching cubes.

@@ -257,8 +257,10 @@ class TestFusionViewRaySampler(BaseRaySampler):
         self.precrop_frac = precrop_frac
         self.precrop_iters = precrop_iters - start_epoch
         self.full_rays = full_rays
-        #
-        H, W, focal = self.dataset.get_hwf()
+
+        H, W, focal = dataset.get_hwf()
+        self.is_GL = dataset.is_GL
+        
         if full_rays:
             self.N_rand = (H*W - 1) // self.n_replica + 1
         # the current solution for iters after `precrop_iters`
@@ -308,7 +310,10 @@ class TestFusionViewRaySampler(BaseRaySampler):
             # cam_viewdir = img_dict['pose'][:3,2]
             target_d = img_dict['depths'][img_i] # 480, 640
             target = img_dict['gt_img'][img_i].permute(1,2,0) # NOTE!!! rgb is CHW, transfer to HWC
-            rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose, normalize_dir=True)
+            if self.is_GL:
+                rays_o, rays_d = get_rays(*self.dataset.get_hwf(), pose, normalize_dir=True)
+            else:
+                rays_o, rays_d = get_rays_openCV(*self.dataset.get_HWK(), pose, normalize_dir=True)
             if not self.full_rays:
                 # To avoid manually setting numpy random seed for ender user when num_workers > 1, 
                 # replace np.random.choice with torch.randperm

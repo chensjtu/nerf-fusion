@@ -1,6 +1,8 @@
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from accelRF.datasets import Room_SCANNET
+from accelRF.datasets import neural_rgbd_dataset
 
-a = Room_SCANNET('demo_dir','scannet')
+a = neural_rgbd_dataset('data','breakfast_room')
+print(a.get_hwf())
+print(a.get_HWK())
